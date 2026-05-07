@@ -1,18 +1,39 @@
 import numpy as np
 from scipy.signal import hilbert
-from .base import get_dual_roi_mean
-from .base import select_best_component
+from .base import get_dual_roi_mean, reconstruct_multicomponent_with_snr
 
-
-def extract_respiration(frames, fs, n_components=3):
+def extract_respiration(frames, fs, n_components=5):
+    """
+    升级版 AFD：集成预处理与多组分 SNR 重构
+    """
+    # 1. 预处理：ROI 提取 + 小波去噪
     signal_1d = get_dual_roi_mean(frames, window_size=5)
-    analytic_signal = hilbert(signal_1d - np.mean(signal_1d))
-    # AFD 简化逻辑：寻找与呼吸频段最匹配的解析分量[cite: 3]
-    # 此处省略复杂的 AFD 迭代细节，采用你提供的频率搜索思路
-    t = np.arange(len(signal_1d)) / fs
+    
+    # 2. 转换为解析信号 (Hilbert 变换)
+    z = hilbert(signal_1d - np.mean(signal_1d))
+    t = np.arange(len(z)) / fs
+    
+    residual = z.copy()
     components = []
-    # 模拟 AFD 分解过程
-    for f in np.linspace(0.1, 0.5, 20):
-        comp = np.exp(1j * 2 * np.pi * f * t) # 示例基函数[cite: 3]
-        components.append(comp.real)
-    return select_best_component(np.array(components), fs)
+    
+    # 3. 模拟 AFD 迭代搜索逻辑 (寻找 0.1-0.5Hz 频段内的基函数)
+    search_freqs = np.linspace(0.1, 0.5, 50)
+    for _ in range(n_components):
+        best_comp = None
+        max_proj = -1
+        
+        for f in search_freqs:
+            # 生成候选基函数 (r=0.95 确保在单位圆内)
+            kernel = np.exp(1j * 2 * np.pi * f * t)
+            proj = np.abs(np.vdot(residual, kernel))
+            
+            if proj > max_proj:
+                max_proj = proj
+                best_comp = (np.vdot(residual, kernel) / np.vdot(kernel, kernel)) * kernel
+        
+        if best_comp is not None:
+            components.append(np.real(best_comp))
+            residual = residual - best_comp
+            
+    # 4. 全员入选逻辑：叠加所有符合频率和 SNR 条件的 AFD 分量
+    return reconstruct_multicomponent_with_snr(np.array(components), fs)

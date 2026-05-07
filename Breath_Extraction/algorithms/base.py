@@ -1,21 +1,38 @@
 import numpy as np
 from scipy.fft import fft, fftfreq
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import find_peaks, savgol_filter, welch
+import pywt
 
+
+def wavelet_denoise(signal, alpha=0.5):
+    """【预处理】自适应小波去噪：去除原始信号中的高频毛刺"""
+    if len(signal) < 16: return signal
+    coeffs = pywt.wavedec(signal, 'db4', level=3)
+    sigma = np.median(np.abs(coeffs[-1])) / 0.6745
+    thr = alpha * np.sqrt(2.0 * np.log(len(signal))) * sigma
+    coeffs_dn = [coeffs[0]] + [pywt.threshold(c, thr, mode='soft') for c in coeffs[1:]]
+    return pywt.waverec(coeffs_dn, 'db4')[:len(signal)]
+
+
+def calculate_snr(signal, fs=10.0, band=(0.1, 0.4)):
+    """【质量评估】计算分量在呼吸频段内的信噪比 (SNR)"""
+    f, psd = welch(signal, fs, nperseg=min(len(signal), 256))
+    idx_band = np.logical_and(f >= band[0], f <= band[1])
+    if not np.any(idx_band): return -10.0
+    signal_pwr = np.sum(psd[idx_band])
+    noise_pwr = np.sum(psd[~idx_band])
+    return 10 * np.log10(signal_pwr / noise_pwr) if noise_pwr > 0 else 20.0
 
 def get_dual_roi_mean(frames, window_size=5):
-    """
-    新方法选点：动态追踪左右臀部压力中心提取 5x5 区域均值
-    """
+    """【入口统一】ROI 提取 + 立即执行小波预处理"""
     offset = window_size // 2
     signal_1d = []
     for f in frames:
-        # 寻找左右区域最大值
-        left_zone = f[:, :16]
-        right_zone = f[:, 16:]
-        l_idx = np.unravel_index(np.argmax(left_zone), left_zone.shape)
-        r_idx_raw = np.unravel_index(np.argmax(right_zone), right_zone.shape)
-        r_idx = (r_idx_raw[0], r_idx_raw[1] + 16)
+        l_zone = f[:, :16]
+        r_zone = f[:, 16:]
+        l_idx = np.unravel_index(np.argmax(l_zone), l_zone.shape)
+        r_idx = np.unravel_index(np.argmax(r_zone), r_zone.shape)
+        r_idx = (r_idx[0], r_idx[1] + 16)
 
         def get_roi_mean(matrix, center_idx):
             r, c = center_idx
@@ -25,8 +42,37 @@ def get_dual_roi_mean(frames, window_size=5):
             return np.mean(roi) if roi.size > 0 else 0
 
         signal_1d.append((get_roi_mean(f, l_idx) + get_roi_mean(f, r_idx)) / 2)
-    signal_1d = np.array(signal_1d)
-    return signal_1d - np.mean(signal_1d)
+
+    return wavelet_denoise(np.array(signal_1d))
+
+def reconstruct_multicomponent_with_snr(components, fs, snr_threshold=3.0):
+    """
+    【核心变更】全员入选逻辑：
+    不再只选一个分量，而是叠加所有符合频率(0.1-0.4Hz)且 SNR 达标的分量。
+    """
+    if components is None or len(components) == 0:
+        return np.zeros(100)
+
+    reconstructed_signal = np.zeros_like(components[0])
+    found_any = False
+
+    for comp in components:
+        n = len(comp)
+        freqs = fftfreq(n, 1/fs)[:n // 2]
+        fft_vals = np.abs(fft(comp))[:n // 2]
+        dom_freq = freqs[np.argmax(fft_vals)]
+
+        # 1. 频率判定：0.1 ~ 0.4 Hz
+        if 0.1 <= dom_freq <= 0.4:
+            # 2. 质量判定：SNR 必须大于阈值
+            snr = calculate_snr(comp, fs)
+            if snr >= snr_threshold:
+                reconstructed_signal += comp
+                found_any = True
+
+    # 保底逻辑：如果没有任何分量达标，返回能量最大的原始分量
+    return reconstructed_signal if found_any else components[0]
+
 
 
 def calculate_bpm_fpr(signal, fs, k1=0.3):

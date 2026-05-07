@@ -1,20 +1,18 @@
 import numpy as np
+import numpy as np
 from vmdpy import VMD
-from scipy.fft import fft, fftfreq
-from .base import get_dual_roi_mean
-
+from .base import get_dual_roi_mean, reconstruct_multicomponent_with_snr
 
 def optimize_vmd_with_mape(signal, fs=10.0):
     """
-    结合文献 VMD-FPR 逻辑：基于 MAPE 自动寻找最优 K 值并重构呼吸信号
+    升级版 VMD-MAPE：结合 MAPE 自动寻优与 SNR 分量重构
     """
     if len(signal) < 100:
         return signal
 
     mapes = []
-    k_range = range(2, 11)  # 文献实验中 K 的范围扩展到 2-10
+    k_range = range(2, 11) 
     best_u = None
-    best_k = 2
 
     for k in k_range:
         # VMD 分解
@@ -25,16 +23,14 @@ def optimize_vmd_with_mape(signal, fs=10.0):
         mape = np.sum(res ** 2) / np.sum(signal ** 2)
         mapes.append(mape)
 
-        # 拐点检测逻辑：如果 MAPE 出现回升，说明出现过分解，停止迭代[cite: 10]
-        if len(mapes) > 1:
-            if mapes[-1] > mapes[-2]:
-                break
+        # 拐点检测：防止过分解
+        if len(mapes) > 1 and mapes[-1] > mapes[-2]:
+            break
 
         best_u = u
-        best_k = k
 
-    # 修改点：调用重构函数，而不是只选一个分量
-    return reconstruct_respiration_signal(best_u, fs)
+    # 使用 base.py 中定义的“全员入选+SNR筛选”逻辑进行重构
+    return reconstruct_multicomponent_with_snr(best_u, fs)
 
 
 def reconstruct_respiration_signal(components, fs):
@@ -99,10 +95,9 @@ def calculate_bpm_fpr(signal, fs, k1=0.3):
 
     return bpm
 
-
 def extract_respiration(frames, fs):
     """
-    新方法入口：使用动态选点 + VMD_MAPE 重构[cite: 11, 14]
+    入口函数：get_dual_roi_mean 内部已集成小波去噪预处理
     """
     signal_1d = get_dual_roi_mean(frames)
     return optimize_vmd_with_mape(signal_1d, fs)
