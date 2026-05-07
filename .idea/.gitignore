@@ -1,0 +1,54 @@
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+# --- Python 相关 ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- PyCharm/IDE 相关 ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- 数据文件 (非常重要：防止上传巨大的 TXT 原始数据) ---
+# 建议将所有原始 TXT 数据放在专门的 data/ 文件夹中并屏蔽
+data/
+*.txt
+*.csv
+*.mat
+*.npy
+*.npz
+
+Real_time_Extraction/dataset/
+*.npy
+
+# --- 日志与缓存 ---
+*.log
+.cache/
+.pytest_cache/
+
+# --- 操作系统相关 ---
+.DS_Store
+Thumbs.db
