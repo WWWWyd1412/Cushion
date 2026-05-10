@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
         plot_layout.addWidget(self.toolbar)  # 将工具栏添加到布局
         plot_layout.addWidget(self.canvas)
 
-        main_layout.addWidget(plot_container, 4)  # 将容器添加到主布局[cite: 10]
+        main_layout.addWidget(plot_container, 4)  # 将容器添加到主布局
 
     # --- 逻辑处理步骤 ---
 
@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
             self.raw_times, self.raw_frames = data_loader.load_pressure_txt(self.file_path)
             self.status_label.setText(f"加载成功: {len(self.raw_frames)} 帧数据")
 
-            # 由于16行/列是坏点，绘图时显示空间平均趋势[cite: 11]
+            # 由于16行/列是坏点，绘图时显示空间平均趋势
             self.plot_spatial_mean(self.raw_frames, "原始数据空间平均趋势 (含异常尖峰)")
             self.btn_preprocess.setEnabled(True)
         except Exception as e:
@@ -179,7 +179,7 @@ class MainWindow(QMainWindow):
     # --- 绘图辅助函数 ---
 
     def plot_spatial_mean(self, frames, title):
-        """计算活跃区域均值，确保UI波形幅度与分析一致[cite: 24, 26]"""
+        """计算活跃区域均值，确保UI波形幅度与分析一致"""
         self.figure.clear()
         ax = self.figure.add_subplot(111)
 
@@ -192,7 +192,7 @@ class MainWindow(QMainWindow):
             if active_points.size > 0:
                 avg_trend.append(np.mean(active_points))
             else:
-                # 回退到非零点平均[cite: 24]
+                # 回退到非零点平均
                 non_zero = f[f > 35]
                 avg_trend.append(np.mean(non_zero) if non_zero.size > 0 else 0)
 

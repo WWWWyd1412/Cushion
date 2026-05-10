@@ -77,7 +77,7 @@ def reconstruct_multicomponent_with_snr(components, fs, snr_threshold=3.0):
 
 def calculate_bpm_fpr(signal, fs, k1=0.3):
     """
-    新方法频率计算：基于文献 VMD-FPR 的 TH1 阈值识别[cite: 11, 16]
+    新方法频率计算：基于文献 VMD-FPR 的 TH1 阈值识别
     """
     peaks, _ = find_peaks(signal)
     troughs, _ = find_peaks(-signal)

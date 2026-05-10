@@ -1,6 +1,7 @@
 import numpy as np
 import numpy as np
 from vmdpy import VMD
+from scipy.fftpack import fft, fftfreq
 from .base import get_dual_roi_mean, reconstruct_multicomponent_with_snr
 
 def optimize_vmd_with_mape(signal, fs=10.0):

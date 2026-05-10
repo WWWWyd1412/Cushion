@@ -1,222 +1,209 @@
 import sys
+import os
 import numpy as np
-import matplotlib.pyplot as plt
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QTextEdit)
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+import matplotlib
 
-# 核心模块导入
+# 强制使用更稳定的 Agg 后端进行绘图计算
+matplotlib.use('Qt5Agg')
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
+                             QWidget, QPushButton, QTextEdit, QFileDialog, QLabel)
+from PyQt5.QtCore import Qt
+from vmdpy import VMD
+
+# 导入实验室核心模块
 import data_loader
 import preprocess
-from algorithms import vmd_MAPE
-from algorithms.base import get_dual_roi_mean, calculate_bpm_fpr, smooth_respiration_signal
+from algorithms import vmd_MAPE, base
+
 
 class VmdFprStepByStep(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VMD-FPR 算法全流程分步可视化 (时间轴版)")
-        self.resize(1600, 900)
-        
-        self.fs = 10.0 # 采样频率 10Hz
-        self.raw_frames = None
+        self.setWindowTitle("VMD-FPR 逻辑验证工具 - 双寻优准则版")
+        self.resize(1600, 1000)
+
+        # 核心数据成员
+        self.fs = 10.0
         self.clean_frames = None
         self.signal_1d = None
-        self.results_dict = {}
-        self.best_k_rebound = 2
-        self.best_k_fast = 2
-        
+        self.all_u_cache = {}
+        self.results = {
+            "rebound": {"best_k": 2, "mapes": [], "recon": None},
+            "fast_drop": {"best_k": 2, "mapes": [], "recon": None}
+        }
+
         self.setup_ui()
 
     def setup_ui(self):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        main_layout = QHBoxLayout(main_widget)
+        layout = QHBoxLayout(main_widget)
 
+        # 控制面板
         control_panel = QVBoxLayout()
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
-        
-        self.btn_load = QPushButton("步骤 1: 加载与清洗数据")
-        self.btn_roi = QPushButton("步骤 2: 动态 5x5 ROI 提取")
-        self.btn_vmd = QPushButton("步骤 3: VMD 分解与能量分析")
-        self.btn_reconstruct = QPushButton("步骤 4: 呼吸波形重构与平滑")
-        self.btn_fpr = QPushButton("步骤 5: FPR 特征识别与 BPM 计算")
+        self.btn_1 = QPushButton("步骤 1: 数据加载与清洗")
+        self.btn_2 = QPushButton("步骤 2: 左右分区 5x5 ROI 提取")
+        self.btn_3 = QPushButton("步骤 3: VMD 寻优 (反弹 vs 快速下降@0.0001)")
+        self.btn_4 = QPushButton("步骤 4: 重构呼吸信号波形")
+        self.btn_5 = QPushButton("步骤 5: FPR 识别与 BPM 计算")
 
-        for btn in [self.btn_roi, self.btn_vmd, self.btn_reconstruct, self.btn_fpr]:
-            btn.setEnabled(False)
+        for btn in [self.btn_1, self.btn_2, self.btn_3, self.btn_4, self.btn_5]:
+            btn.setFixedHeight(50)
+            control_panel.addWidget(btn)
 
-        control_panel.addWidget(QLabel("<b>算法执行步骤:</b>"))
-        control_panel.addWidget(self.btn_load)
-        control_panel.addWidget(self.btn_roi)
-        control_panel.addWidget(self.btn_vmd)
-        control_panel.addWidget(self.btn_reconstruct)
-        control_panel.addWidget(self.btn_fpr)
-        control_panel.addWidget(QLabel("<b>过程日志:</b>"))
-        control_panel.addWidget(self.log_output)
-        main_layout.addLayout(control_panel, 1)
+        self.log_edit = QTextEdit()
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setStyleSheet("background-color: #2b2b2b; color: #a9b7c6; font-family: 'Consolas';")
+        control_panel.addWidget(QLabel("执行日志:"))
+        control_panel.addWidget(self.log_edit)
+        layout.addLayout(control_panel, 1)
 
-        self.figure = plt.figure(figsize=(10, 8))
+        # 绘图区域
+        self.figure = plt.figure(figsize=(12, 10))
         self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        
-        plot_layout = QVBoxLayout()
-        plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas)
-        main_layout.addLayout(plot_layout, 3)
+        layout.addWidget(self.canvas, 3)
 
-        self.btn_load.clicked.connect(self.step1_load)
-        self.btn_roi.clicked.connect(self.step2_roi)
-        self.btn_vmd.clicked.connect(self.step3_vmd)
-        self.btn_reconstruct.clicked.connect(self.step4_reconstruct)
-        self.btn_fpr.clicked.connect(self.step5_fpr)
+        self.btn_1.clicked.connect(self.run_step_1)
+        self.btn_2.clicked.connect(self.run_step_2)
+        self.btn_3.clicked.connect(self.run_step_3)
+        self.btn_4.clicked.connect(self.run_step_4)
+        self.btn_5.clicked.connect(self.run_step_5)
 
-    def log(self, text):
-        self.log_output.append(f"<b>[LOG]</b>: {text}")
+    def log(self, msg):
+        self.log_edit.append(f"<b>[INFO]</b> {msg}")
+        QApplication.processEvents()
 
-    def step1_load(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择压力数据", "", "Text Files (*.txt)")
-        if path:
+    def run_step_1(self):
+        """步骤 1: 加载与清洗"""
+        path, _ = QFileDialog.getOpenFileName(self, "选择数据", "", "Text Files (*.txt)")
+        if not path: return
+        try:
             t, f = data_loader.load_pressure_txt(path)
             _, self.clean_frames = preprocess.clean_dataset(t, f)
-            self.log(f"数据加载完成。有效帧数: {len(self.clean_frames)}")
-            
+            self.log(f"数据加载成功: {len(self.clean_frames)} 帧")
             self.figure.clear()
             ax = self.figure.add_subplot(111)
-            # 转换为时间轴
-            time_axis = np.arange(len(self.clean_frames)) / self.fs
-            ax.plot(time_axis, np.mean(self.clean_frames, axis=(1, 2)), color='gray')
-            ax.set_title("1. 空间全局平均趋势 (时间轴)")
-            ax.set_xlabel("时间 (s)")
+            ax.imshow(self.clean_frames[len(self.clean_frames) // 2], cmap='jet')
+            ax.set_title("预处理后的中间帧热力图")
             self.canvas.draw()
-            self.btn_roi.setEnabled(True)
+        except Exception as e:
+            self.log(f"加载出错: {str(e)}")
 
-    def step2_roi(self):
-        self.signal_1d = get_dual_roi_mean(self.clean_frames, window_size=5)
-        self.log("动态 5x5 ROI 提取完成。")
-        
+    def run_step_2(self):
+        """步骤 2: 左右分区 ROI 提取"""
+        if self.clean_frames is None: return
+        self.signal_1d = base.get_dual_roi_mean(self.clean_frames, window_size=5)
+        self.log("5x5 ROI 信号提取完成 (已含小波去噪)")
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        time_axis = np.arange(len(self.signal_1d)) / self.fs
-        ax.plot(time_axis, self.signal_1d, color='blue')
-        ax.set_title("2. 动态 ROI 提取后的 1D 信号")
-        ax.set_xlabel("时间 (s)")
+        ax.plot(self.signal_1d, color='#0078d7')
+        ax.set_title("1D ROI 均值趋势信号")
         self.canvas.draw()
-        self.btn_vmd.setEnabled(True)
 
-    def step3_vmd(self):
-        from vmdpy import VMD
-        self.log("<b>开始 VMD 分解与能量饱和分析...</b>")
-        
+    def run_step_3(self):
+        """步骤 3: VMD 迭代寻优 (区分反弹法与阈值快降法)"""
+        if self.signal_1d is None: return
+        self.log("执行 VMD 寻优计算 (K=2~10)...")
+
         mapes = []
+        self.all_u_cache = {}
         k_range = list(range(2, 11))
-        all_results = {}
+        sig = self.signal_1d
 
         for k in k_range:
-            u, _, _ = VMD(self.signal_1d, alpha=2000, tau=0, K=k, DC=0, init=1, tol=1e-7)
-            res = self.signal_1d - np.sum(u, axis=0)
-            mape = np.sum(res ** 2) / np.sum(self.signal_1d ** 2)
+            u, _, _ = VMD(sig, alpha=2000, tau=0, K=k, DC=0, init=1, tol=1e-7)
+            res = sig - np.sum(u, axis=0)
+            mape = np.sum(res ** 2) / np.sum(sig ** 2)
             mapes.append(mape)
-            all_results[k] = (u, mape)
-            self.log(f"K={k} | MAPE: {mape:.6f}")
+            self.all_u_cache[k] = u
+            self.log(f"K={k} | MAPE: {mape:.8f}")
 
-        # 逻辑判断
-        self.best_k_rebound = 2
+        # --- 寻优算法 A: 触底反弹法 (保持原样) ---
+        best_k_reb = 2
         for i in range(1, len(mapes)):
-            if mapes[i] > mapes[i-1]:
-                self.best_k_rebound = k_range[i-1]
+            if mapes[i] > mapes[i - 1]:  # 发现拐点
+                best_k_reb = k_range[i - 1]
                 break
-            self.best_k_rebound = k_range[i]
-        
-        diffs = np.abs(np.diff(mapes))
-        self.best_k_fast = k_range[np.argmax(diffs) + 1]
-        self.results_dict = all_results
+            best_k_reb = k_range[i]
 
-        self.plot_energy_analysis(mapes, k_range, all_results[self.best_k_rebound][0])
-        self.btn_reconstruct.setEnabled(True)
+        # --- 寻优算法 B: 快速下降法 (必须满足 MAPE < 0.0001) ---
+        best_k_fast = 2
+        qualified_indices = [i for i, m in enumerate(mapes) if m < 0.0001]
 
-    def plot_energy_analysis(self, mapes, k_range, u_best):
+        if not qualified_indices:
+            self.log("警告: 所有 K 值的 MAPE 均未达到 0.0001 约束，取最小 MAPE 点")
+            best_k_fast = k_range[mapes.index(min(mapes))]
+        else:
+            # 在符合 MAPE < 0.0001 的候选项中寻找下降速率最快的
+            # 下降速率通过计算一阶差分 np.diff 的绝对值来体现
+            diffs = np.abs(np.diff(mapes))
+            # 仅在达标范围内寻找最大差分索引
+            valid_diff_indices = [i for i in range(len(diffs)) if i + 1 in qualified_indices]
+            if valid_diff_indices:
+                max_diff_idx = valid_diff_indices[np.argmax([diffs[i] for i in valid_diff_indices])]
+                best_k_fast = k_range[max_diff_idx + 1]
+            else:
+                best_k_fast = k_range[qualified_indices[0]]
+
+        self.results["rebound"]["best_k"] = best_k_reb
+        self.results["fast_drop"]["best_k"] = best_k_fast
+
+        # 绘图显示
         self.figure.clear()
-        ax1 = self.figure.add_subplot(2, 1, 1)
-        ax1.plot(k_range, mapes, 'o-', color='#2c3e50')
-        ax1.axvline(x=self.best_k_rebound, color='red', linestyle='--')
-        ax1.set_title("VMD 分解能量残差比 (MAPE)")
-        ax1.set_xlabel("分解层数 K")
-        
-        ax2 = self.figure.add_subplot(2, 1, 2)
-        energies = [np.sum(imf**2) for imf in u_best]
-        ratios = [e / np.sum(energies) * 100 for e in energies]
-        ax2.bar([f"IMF{i+1}" for i in range(len(ratios))], ratios, color='#3498db')
-        ax2.set_title(f"K={self.best_k_rebound} 时各模态能量占比 (%)")
+        ax_mape = self.figure.add_subplot(111)
+        ax_mape.plot(k_range, mapes, 'o-', color='#333333', markerfacecolor='white', markersize=6)
+        ax_mape.axhline(y=0.0001, color='orange', linestyle=':', label='快降法门限 (0.0001)')
+        ax_mape.scatter(best_k_reb, mapes[k_range.index(best_k_reb)], color='red', s=100,
+                        label=f'反弹法 K={best_k_reb}', zorder=5)
+        ax_mape.scatter(best_k_fast, mapes[k_range.index(best_k_fast)], color='green', marker='s', s=100,
+                        label=f'快降法 K={best_k_fast}', zorder=5)
+
+        ax_mape.set_title("VMD 分解能量残差比 (MAPE) 寻优曲线")
+        ax_mape.set_xlabel("K 值")
+        ax_mape.set_ylabel("MAPE")
+        ax_mape.legend()
+        self.canvas.draw()
+        self.log(f"判定结果: 触底反弹 K={best_k_reb}, 快速下降(约束后) K={best_k_fast}")
+
+    def run_step_4(self):
+        """步骤 4: 重构波形"""
+        if not self.all_u_cache: return
+        self.log("正在执行信号重构...")
+        k_r = self.results["rebound"]["best_k"]
+        k_f = self.results["fast_drop"]["best_k"]
+
+        self.results["rebound"]["recon"] = vmd_MAPE.reconstruct_respiration_signal(self.all_u_cache[k_r], self.fs)
+        self.results["fast_drop"]["recon"] = vmd_MAPE.reconstruct_respiration_signal(self.all_u_cache[k_f], self.fs)
+
+        self.figure.clear()
+        ax1 = self.figure.add_subplot(211)
+        ax1.plot(self.results["rebound"]["recon"], color='#e74c3c')
+        ax1.set_title(f"反弹法重构波形 (K={k_r})")
+
+        ax2 = self.figure.add_subplot(212)
+        ax2.plot(self.results["fast_drop"]["recon"], color='#2ecc71')
+        ax2.set_title(f"快速下降法重构波形 (K={k_f})")
         self.figure.tight_layout()
         self.canvas.draw()
 
-    def step4_reconstruct(self):
-        from algorithms.vmd_MAPE import reconstruct_respiration_signal
-        
-        def get_final_sig(u):
-            recon = reconstruct_respiration_signal(u, self.fs)
-            sig = recon[100:] if len(recon) > 100 else recon # 切除前100帧
-            return smooth_respiration_signal(sig, window_size=25, polyorder=3)
+    def run_step_5(self):
+        """步骤 5: FPR 频率计算"""
+        if self.results["rebound"]["recon"] is None: return
+        self.log("正在执行 FPR 特征识别算法...")
 
-        u_reb, _ = self.results_dict[self.best_k_rebound]
-        u_fst, _ = self.results_dict[self.best_k_fast]
-        
-        self.sig_rebound = get_final_sig(u_reb)
-        self.sig_fast = get_final_sig(u_fst)
+        bpm_r = vmd_MAPE.calculate_bpm_fpr(self.results["rebound"]["recon"], self.fs)
+        bpm_f = vmd_MAPE.calculate_bpm_fpr(self.results["fast_drop"]["recon"], self.fs)
 
-        self.figure.clear()
-        # 处理时间轴（注意重构后切掉了前100帧）
-        time_axis_reb = np.arange(len(self.sig_rebound)) / self.fs
-        time_axis_fst = np.arange(len(self.sig_fast)) / self.fs
-
-        ax1 = self.figure.add_subplot(2, 1, 1)
-        ax1.plot(time_axis_reb, self.sig_rebound, color='#e74c3c')
-        ax1.set_title(f"方法 A: 反弹判定重构 (K={self.best_k_rebound})")
-        ax1.set_xlabel("时间 (s)")
-        
-        ax2 = self.figure.add_subplot(2, 1, 2)
-        ax2.plot(time_axis_fst, self.sig_fast, color='#3498db')
-        ax2.set_title(f"方法 B: 快速下降重构 (K={self.best_k_fast})")
-        ax2.set_xlabel("时间 (s)")
-        
-        self.figure.tight_layout()
+        self.figure.axes[0].set_title(f"反弹法 (K={self.results['rebound']['best_k']}) | {bpm_r:.2f} BPM")
+        self.figure.axes[1].set_title(f"快速下降法 (K={self.results['fast_drop']['best_k']}) | {bpm_f:.2f} BPM")
         self.canvas.draw()
-        self.btn_fpr.setEnabled(True)
+        self.log(f"最终结果: 反弹法 {bpm_r:.2f} BPM, 快降法 {bpm_f:.2f} BPM")
 
-    def step5_fpr(self):
-        from scipy.signal import find_peaks
-        
-        def process_fpr(signal):
-            p, _ = find_peaks(signal)
-            t, _ = find_peaks(-signal)
-            if len(p) == 0 or len(t) == 0: return 0.0, []
-            th1 = 0.3 * abs(np.max(signal[p]) - np.min(signal[t]))
-            main_waves = [idx for idx in p if (signal[idx] - np.min(signal[t])) > th1]
-            if len(main_waves) < 2: return 0.0, main_waves
-            bpm = (60 * self.fs) / np.mean(np.diff(main_waves))
-            return bpm, main_waves
-
-        bpm_a, peaks_a = process_fpr(self.sig_rebound)
-        bpm_b, peaks_b = process_fpr(self.sig_fast)
-
-        self.figure.clear()
-        # 绘图逻辑同样应用时间轴
-        for i, (sig, peaks, bpm, k, col) in enumerate([
-            (self.sig_rebound, peaks_a, bpm_a, self.best_k_rebound, '#e74c3c'),
-            (self.sig_fast, peaks_b, bpm_b, self.best_k_fast, '#3498db')
-        ]):
-            ax = self.figure.add_subplot(2, 1, i+1)
-            time_axis = np.arange(len(sig)) / self.fs
-            ax.plot(time_axis, sig, color=col)
-            ax.plot(np.array(peaks)/self.fs, sig[peaks], "kx") # 特征点也要除以 fs
-            ax.set_title(f"结果 {chr(65+i)}: {bpm:.1f} BPM (K={k})")
-            ax.set_xlabel("时间 (s)")
-
-        self.figure.tight_layout()
-        self.canvas.draw()
 
 if __name__ == "__main__":
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']
     plt.rcParams['axes.unicode_minus'] = False
     app = QApplication(sys.argv)
