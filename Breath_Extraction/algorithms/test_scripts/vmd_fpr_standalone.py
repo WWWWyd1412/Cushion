@@ -3,6 +3,12 @@ import os
 import numpy as np
 import matplotlib
 
+# --- 关键修改：动态将父目录加入 sys.path 确保跨目录导入正常 ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(os.path.dirname(current_dir))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
 # 强制使用更稳定的 Agg 后端进行绘图计算
 matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
@@ -12,7 +18,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
 from PyQt5.QtCore import Qt
 from vmdpy import VMD
 
-# 导入实验室核心模块
+# 修正导入链路
 import data_loader
 import preprocess
 from algorithms import vmd_MAPE, base
@@ -120,7 +126,7 @@ class VmdFprStepByStep(QMainWindow):
             self.all_u_cache[k] = u
             self.log(f"K={k} | MAPE: {mape:.8f}")
 
-        # --- 寻优算法 A: 触底反弹法 (保持原样) ---
+        # --- 寻优算法 A: 触底反弹法 ---
         best_k_reb = 2
         for i in range(1, len(mapes)):
             if mapes[i] > mapes[i - 1]:  # 发现拐点
@@ -128,7 +134,7 @@ class VmdFprStepByStep(QMainWindow):
                 break
             best_k_reb = k_range[i]
 
-        # --- 寻优算法 B: 快速下降法 (必须满足 MAPE < 0.0001) ---
+        # --- 寻优算法 B: 快速下降法 ---
         best_k_fast = 2
         qualified_indices = [i for i, m in enumerate(mapes) if m < 0.0001]
 
@@ -136,10 +142,7 @@ class VmdFprStepByStep(QMainWindow):
             self.log("警告: 所有 K 值的 MAPE 均未达到 0.0001 约束，取最小 MAPE 点")
             best_k_fast = k_range[mapes.index(min(mapes))]
         else:
-            # 在符合 MAPE < 0.0001 的候选项中寻找下降速率最快的
-            # 下降速率通过计算一阶差分 np.diff 的绝对值来体现
             diffs = np.abs(np.diff(mapes))
-            # 仅在达标范围内寻找最大差分索引
             valid_diff_indices = [i for i in range(len(diffs)) if i + 1 in qualified_indices]
             if valid_diff_indices:
                 max_diff_idx = valid_diff_indices[np.argmax([diffs[i] for i in valid_diff_indices])]

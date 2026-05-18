@@ -1,7 +1,15 @@
 import numpy as np
 from scipy.fft import fft, fftfreq
-from scipy.signal import find_peaks, savgol_filter, welch
+from scipy.signal import find_peaks, savgol_filter, welch, butter, filtfilt
 import pywt
+
+def butter_bandpass_filter(data, lowcut=0.1, highcut=0.5, fs=10.0, order=3):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(order, [low, high], btype='band')
+    y = filtfilt(b, a, data)
+    return y
 
 
 def wavelet_denoise(signal, alpha=0.5):
@@ -24,16 +32,55 @@ def calculate_snr(signal, fs=10.0, band=(0.1, 0.4)):
     return 10 * np.log10(signal_pwr / noise_pwr) if noise_pwr > 0 else 20.0
 
 def get_dual_roi_mean(frames, window_size=5):
-    """【入口统一】ROI 提取 + 立即执行小波预处理"""
+    """
+    【自适应稳定态触发版】
+    自动跳过开头的空载帧和入座时的剧烈波动，检测到稳定坐姿后才锁定中心坐标。
+    """
+    if len(frames) == 0: return np.array([])
+    
     offset = window_size // 2
     signal_1d = []
-    for f in frames:
-        l_zone = f[:, :16]
-        r_zone = f[:, 16:]
-        l_idx = np.unravel_index(np.argmax(l_zone), l_zone.shape)
-        r_idx = np.unravel_index(np.argmax(r_zone), r_zone.shape)
-        r_idx = (r_idx[0], r_idx[1] + 16)
+    
+    # ================= 智能寻找真正的稳定受力画面 =================
+    stable_mean_frame = None
+    trigger_threshold = 120   # 压力触发门限：整帧最大值超过此值，认为人已入座
+    stability_window = 20    # 稳定窗口长度（约2秒）
+    
+    print("[ACMD-PROCESS] 开始扫描自适应坐姿稳定区间...")
+    
+    for i in range(len(frames) - stability_window):
+        # 1. 检查当前帧是否有人坐下
+        if np.max(frames[i]) > trigger_threshold:
+            # 2. 验证从当前帧开始的连续 20 帧是否稳定（用标准差评估身体晃动）
+            sub_series = frames[i : i + stability_window]
+            # 计算这20帧的空间总均值的标准差
+            frame_means = [np.mean(f) for f in sub_series]
+            stability_score = np.std(frame_means)
+            
+            # 如果标准差很小（例如 < 5.0，说明坐下了且身体没有剧烈晃动）
+            if stability_score < 5.0:
+                # 抓到了真正的稳定态！计算这 20 帧的均值画面
+                stable_mean_frame = np.mean(sub_series, axis=0)
+                print(f"【触发成功】在第 {i} 帧捕捉到稳定坐姿（稳定度: {stability_score:.2f}）！")
+                break
 
+    # 兜底逻辑：如果全段都特别晃，找不到绝对稳定区间，就回退到用全段画面均值
+    if stable_mean_frame is None:
+        print("【警告】未检测到绝对稳定区间，将采用全段均值进行坐标定位。")
+        stable_mean_frame = np.mean(frames, axis=0)
+
+    # ================= 依据稳定画面锁定 ROI 坐标 =================
+    l_zone = stable_mean_frame[:, :16]
+    r_zone = stable_mean_frame[:, 16:]
+    
+    l_idx = np.unravel_index(np.argmax(l_zone), l_zone.shape)
+    r_idx = np.unravel_index(np.argmax(r_zone), r_zone.shape)
+    r_idx = (r_idx[0], r_idx[1] + 16)  # 修正右侧列偏移
+    
+    print(f"【坐标锁定】左侧臀部中心: {l_idx}, 右侧心中心: {r_idx}。开始静止降维提取...")
+
+    # ================= 开始提取 1D 信号 =================
+    for f in frames:
         def get_roi_mean(matrix, center_idx):
             r, c = center_idx
             r_s, r_e = max(0, r - offset), min(31, r + offset + 1)
@@ -43,7 +90,12 @@ def get_dual_roi_mean(frames, window_size=5):
 
         signal_1d.append((get_roi_mean(f, l_idx) + get_roi_mean(f, r_idx)) / 2)
 
-    return wavelet_denoise(np.array(signal_1d))
+    # ================= 级联滤波链路 =================
+    # 空间均值 -> 小波去噪 -> 带通滤波 (0.1-0.5Hz)
+    sig_wavelet = wavelet_denoise(np.array(signal_1d), alpha=1.2)
+    sig_bandpass = butter_bandpass_filter(sig_wavelet, lowcut=0.1, highcut=0.5, fs=10.0, order=3)
+    
+    return sig_bandpass
 
 def reconstruct_multicomponent_with_snr(components, fs, snr_threshold=3.0):
     """
