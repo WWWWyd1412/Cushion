@@ -188,3 +188,55 @@ def select_best_component(components, fs):
     else:
         # 如果没有找到符合频段的分量，返回第一个分量的全零版本或直接返回全零
         return np.zeros_like(components[0]) if len(components) > 0 else np.zeros(200)
+    
+
+def reconstruct_top3_components_by_energy(components, fs):
+    """
+    【学术策略升级】Top 3 能量自适应重构逻辑：
+    筛选所有落入生理呼吸频段(0.1 ~ 0.4Hz)的分量，并按有效能量(RMS)从大到小排序，
+    强力提取前 3 个核心分量进行线性叠加重构。
+    """
+    if components is None or len(components) == 0:
+        return np.zeros(100)
+
+    valid_components_info = []
+    
+    # 1. 遍历所有分量进行生理频段审查与能量测算
+    for idx, comp in enumerate(components):
+        n = len(comp)
+        freqs = fftfreq(n, 1/fs)[:n // 2]
+        fft_vals = np.abs(fft(comp))[:n // 2]
+        dom_freq = freqs[np.argmax(fft_vals)]
+
+        # 判定是否落入生理呼吸频段 (0.1 ~ 0.4 Hz)
+        if 0.1 <= dom_freq <= 0.4:
+            # 计算该分量的方根振幅（RMS 能量）
+            rms_energy = np.sqrt(np.mean(comp ** 2))
+            valid_components_info.append({
+                'component': comp,
+                'energy': rms_energy,
+                'freq': dom_freq
+            })
+
+    # 2. 核心排序与自适应 Top 3 提取
+    if len(valid_components_info) == 0:
+        print("[重构警告] 未发现任何落入生理频段的分量，启动安全保底机制：取原始第一分量")
+        return components[0]
+
+    # 按能量（energy 项）从大到小（降序）进行排序
+    valid_components_info.sort(key=lambda x: x['energy'], reverse=True)
+    
+    # 取前 3 个分量（如果满足频段的分量不足 3 个，则有几个取几个）
+    top_k = min(3, len(valid_components_info))
+    selected_info = valid_components_info[:top_k]
+    
+    print(f"[自适应重构] 成功筛选出 {len(valid_components_info)} 个生理成分，已提取 Top {top_k} 能量模态进行融合。")
+    for rank, info in enumerate(selected_info):
+        print(f"   -> Top {rank+1} 贡献者: 主频 = {info['freq']:.3f} Hz | RMS 能量 = {info['energy']:.6f}")
+
+    # 3. 线性时域叠加重构
+    reconstructed_signal = np.zeros_like(components[0])
+    for info in selected_info:
+        reconstructed_signal += info['component']
+
+    return reconstructed_signal

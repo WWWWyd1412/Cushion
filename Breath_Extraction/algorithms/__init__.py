@@ -22,4 +22,5 @@ __all__ = [
     "smooth_respiration_signal",
     "calculate_bpm",
     "calculate_bpm_fpr"
+    "reconstruct_top3_components_by_energy"
 ]
