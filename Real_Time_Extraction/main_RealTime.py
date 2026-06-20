@@ -5,6 +5,13 @@ import numpy as np
 import time
 import os
 from datetime import datetime
+
+# 修复 conda 环境下 PyQt5 DLL 找不到的问题
+_conda_prefix = os.environ.get('CONDA_PREFIX', sys.prefix)
+_qt_dll_path = os.path.join(_conda_prefix, 'Library', 'bin')
+if os.path.isdir(_qt_dll_path) and _qt_dll_path not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = _qt_dll_path + os.pathsep + os.environ.get('PATH', '')
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QPushButton, QComboBox,
                              QCheckBox, QFileDialog, QMessageBox, QGroupBox,
