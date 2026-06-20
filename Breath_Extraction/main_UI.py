@@ -137,7 +137,7 @@ class BreathSlidingWindowUI(QMainWindow):
         layout_algo = QVBoxLayout(group_algo)
 
         self.algo_selector = QComboBox()
-        self.algo_selector.addItems(["EMD", "VMD", "AFD", "VMD_FPR", "GOA-VMD"])
+        self.algo_selector.addItems(["EMD", "VMD", "AFD", "VMD_FPR", "SMVMD", "MVMD", "Multi-ROI ICA"])
 
         self.bpm_method_selector = QComboBox()
         self.bpm_method_selector.addItems(["Peak (常规波峰法)", "FPR (特征点法)"])
@@ -458,7 +458,7 @@ class BreathSlidingWindowUI(QMainWindow):
 
     # ================= 算法调度封装 =================
     def _call_algorithm(self, method, frames, fs, progress_callback=None):
-        """统一调度所有算法. progress_callback 仅 GOA-VMD 使用"""
+        """统一调度所有算法"""
         if method == "EMD":
             return algorithms.extract_emd(frames, fs)
         elif method == "VMD":
@@ -467,9 +467,12 @@ class BreathSlidingWindowUI(QMainWindow):
             return algorithms.extract_afd(frames, fs)
         elif method == "VMD_FPR":
             return algorithms.extract_vmd_fpr(frames, fs)
-        elif method == "GOA-VMD":
-            from algorithms.goa_vmd_extract import extract_respiration as _goa_extract
-            return _goa_extract(frames, fs, progress_callback=progress_callback)
+        elif method == "SMVMD":
+            return algorithms.extract_smvmd(frames, fs)
+        elif method == "MVMD":
+            return algorithms.extract_mvmd(frames, fs)
+        elif method == "Multi-ROI ICA":
+            return algorithms.extract_multi_roi_ica(frames, fs)
         else:
             raise ValueError(f"未知算法: {method}")
 

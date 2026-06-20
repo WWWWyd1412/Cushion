@@ -131,7 +131,7 @@ def extract_respiration(frames, fs):
     X_active_list = []
     for c in range(X_multichannel.shape[0]):
         channel_sig = X_multichannel[c, :].astype(np.float32)
-        if np.std(channel_sig) > 2.5: 
+        if np.std(channel_sig) > 12.0: 
             X_active_list.append(channel_sig - np.mean(channel_sig))
             
     if len(X_active_list) == 0:

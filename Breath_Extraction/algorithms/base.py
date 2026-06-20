@@ -2,6 +2,12 @@ import numpy as np
 from scipy.fft import fft, fftfreq
 from scipy.signal import find_peaks, savgol_filter, welch, butter, filtfilt
 import pywt
+import warnings
+from sklearn.exceptions import ConvergenceWarning
+
+# 忽略 FastICA 无法收敛的 ConvergenceWarning 警告
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
 
 def butter_bandpass_filter(data, lowcut=0.1, highcut=0.5, fs=10.0, order=3):
     nyq = 0.5 * fs
@@ -97,6 +103,159 @@ def get_dual_roi_mean(frames, window_size=5):
     
     return sig_bandpass
 
+
+def get_multi_roi_signals(frames, num_rois=4, window_size=5):
+    """
+    【自适应多 ROI 提取】
+    将 32x32 压力阵列划分为多个区域，并在每个区域定位最强受力中心，提取多通道信号。
+    """
+    if len(frames) == 0:
+        return np.array([])
+        
+    offset = window_size // 2
+    
+    # 1. 扫描自适应坐姿稳定区间
+    stable_mean_frame = None
+    trigger_threshold = 120
+    stability_window = 20
+    
+    for i in range(len(frames) - stability_window):
+        if np.max(frames[i]) > trigger_threshold:
+            sub_series = frames[i : i + stability_window]
+            frame_means = [np.mean(f) for f in sub_series]
+            stability_score = np.std(frame_means)
+            if stability_score < 5.0:
+                stable_mean_frame = np.mean(sub_series, axis=0)
+                break
+                
+    if stable_mean_frame is None:
+        stable_mean_frame = np.mean(frames, axis=0)
+        
+    # 2. 定位各区域中心坐标 (防止 ROI 重合过度)
+    centers = []
+    if num_rois == 4:
+        # 分划 4 个象限
+        quadrants = [
+            (0, 16, 0, 16, 0, 0),       # Top-Left
+            (0, 16, 16, 32, 0, 16),     # Top-Right
+            (16, 32, 0, 16, 16, 0),     # Bottom-Left
+            (16, 32, 16, 32, 16, 16)    # Bottom-Right
+        ]
+        for r_s, r_e, c_s, c_e, r_off, c_off in quadrants:
+            zone = stable_mean_frame[r_s:r_e, c_s:c_e]
+            idx = np.unravel_index(np.argmax(zone), zone.shape)
+            centers.append((idx[0] + r_off, idx[1] + c_off))
+    elif num_rois == 2:
+        l_zone = stable_mean_frame[:, :16]
+        r_zone = stable_mean_frame[:, 16:]
+        l_idx = np.unravel_index(np.argmax(l_zone), l_zone.shape)
+        r_idx = np.unravel_index(np.argmax(r_zone), r_zone.shape)
+        centers = [l_idx, (r_idx[0], r_idx[1] + 16)]
+    else:
+        # 贪婪寻找多个极值重心
+        flat_idx = np.argsort(stable_mean_frame.ravel())[::-1]
+        for idx_flat in flat_idx:
+            r, c = np.unravel_index(idx_flat, stable_mean_frame.shape)
+            too_close = False
+            for cr, cc in centers:
+                if abs(cr - r) < 6 and abs(cc - c) < 6:
+                    too_close = True
+                    break
+            if not too_close:
+                centers.append((r, c))
+                if len(centers) == num_rois:
+                    break
+        while len(centers) < num_rois:
+            centers.append((16, 16))
+            
+    # 3. 提取各个 ROI 的时域 1D 信号
+    num_frames = len(frames)
+    signals = np.zeros((num_rois, num_frames))
+    
+    for k, center in enumerate(centers):
+        r, c = center
+        r_s, r_e = max(0, r - offset), min(31, r + offset + 1)
+        c_s, c_e = max(0, c - offset), min(31, c + offset + 1)
+        
+        for i, f in enumerate(frames):
+            roi = f[r_s:r_e, c_s:c_e]
+            signals[k, i] = np.mean(roi) if roi.size > 0 else 0.0
+            
+    # 4. 对每个通道单独进行小波降噪和带通滤波
+    processed_signals = np.zeros((num_rois, num_frames))
+    for k in range(num_rois):
+        sig = signals[k, :]
+        sig_dn = wavelet_denoise(sig, alpha=1.2)
+        sig_bp = butter_bandpass_filter(sig_dn, lowcut=0.1, highcut=0.5, fs=10.0, order=3)
+        processed_signals[k, :] = sig_bp
+        
+    return processed_signals
+
+
+def fuse_signals_ica(multi_channel_signals, fs=10.0):
+    """
+    【多通道 FastICA 盲源分离融合】
+    对多 ROI 通道信号进行解调分离，并筛选出生理特征最典型的呼吸分量。
+    """
+    from sklearn.decomposition import FastICA
+    M, T = multi_channel_signals.shape
+    if M == 1:
+        return multi_channel_signals[0]
+        
+    X = multi_channel_signals.T # shape: (T, M)
+    n_comps = min(3, M)
+    
+    ica = FastICA(n_components=n_comps, random_state=42, max_iter=1000, tol=1e-3)
+    try:
+        sources = ica.fit_transform(X) # shape: (T, n_comps)
+    except Exception as e:
+        print(f"[ICA Warning] FastICA 迭代异常: {e}. 自动回退至 PCA 融合。")
+        return fuse_signals_pca(multi_channel_signals)
+        
+    best_source = None
+    max_snr = -999.0
+    
+    # 评估提取出的每个独立分量
+    for k in range(n_comps):
+        comp = sources[:, k]
+        n = len(comp)
+        freqs = fftfreq(n, 1/fs)[:n // 2]
+        fft_vals = np.abs(fft(comp))[:n // 2]
+        dom_freq = freqs[np.argmax(fft_vals)]
+        
+        # 生理频带限制: 0.1 ~ 0.4 Hz
+        if 0.1 <= dom_freq <= 0.4:
+            snr = calculate_snr(comp, fs)
+            if snr > max_snr:
+                max_snr = snr
+                best_source = comp
+                
+    if best_source is not None:
+        # 相位对齐 (呼吸起伏与通道均值负相关时进行反转)
+        channel_mean = np.mean(multi_channel_signals, axis=0)
+        if np.dot(best_source, channel_mean) < 0:
+            best_source = -best_source
+        return best_source
+    else:
+        # 兜底：返回第一独立成分
+        return sources[:, 0]
+
+
+def fuse_signals_pca(multi_channel_signals):
+    """
+    【PCA 单成分融合】
+    """
+    from sklearn.decomposition import PCA
+    X = multi_channel_signals.T
+    pca = PCA(n_components=1, random_state=42)
+    source = pca.fit_transform(X).flatten()
+    
+    channel_mean = np.mean(multi_channel_signals, axis=0)
+    if np.dot(source, channel_mean) < 0:
+        source = -source
+    return source
+
+
 def reconstruct_multicomponent_with_snr(components, fs, snr_threshold=3.0):
     """
     【核心变更】全员入选逻辑：
@@ -129,11 +288,20 @@ def reconstruct_multicomponent_with_snr(components, fs, snr_threshold=3.0):
 
 def calculate_bpm_fpr(signal, fs, k1=0.3):
     """
-    新方法频率计算：基于文献 VMD-FPR 的 TH1 阈值识别
+    新方法频率计算：基于文献 VMD-FPR 的 TH1 阈值识别 (增加最小间距保护以防毛刺多计)
     """
-    peaks, _ = find_peaks(signal)
-    troughs, _ = find_peaks(-signal)
-    if len(peaks) < 2 or len(troughs) < 1: return 0.0
+    # 增加最小间距限制，防止高频噪声波动导致重复计数
+    min_dist = int(fs * 1.5)
+    peaks, _ = find_peaks(signal, distance=min_dist)
+    troughs, _ = find_peaks(-signal, distance=min_dist)
+    
+    if len(peaks) < 2 or len(troughs) < 1:
+        # 兜底：若由于高密度限制寻峰失败，回退到无限制
+        peaks, _ = find_peaks(signal)
+        troughs, _ = find_peaks(-signal)
+        
+    if len(peaks) < 2 or len(troughs) < 1: 
+        return 0.0
 
     c_max = np.max(signal[peaks])
     t_min = np.min(signal[troughs])
@@ -148,9 +316,14 @@ def calculate_bpm_fpr(signal, fs, k1=0.3):
 
 
 def calculate_bpm(signal, fs=10.0):
-    """原有方法：基于 prominence 的峰值检测"""
-    peaks, _ = find_peaks(signal, distance=int(fs * 1.2),
-                         prominence=(np.max(signal) - np.min(signal)) * 0.2)
+    """原有方法：基于 prominence 的峰值检测 (基于方差的自适应显著度门限)"""
+    std_val = np.std(signal)
+    if std_val < 1e-6: return 0.0
+    
+    # 采用标准差来自适应确定 Prominence，从而克服运动伪影极大值的干扰
+    prom = max(std_val * 0.5, 1e-3)
+    peaks, _ = find_peaks(signal, distance=int(fs * 1.5), prominence=prom)
+    
     if len(peaks) < 2: return 0.0
     return (60 * fs) / np.mean(np.diff(peaks))
 

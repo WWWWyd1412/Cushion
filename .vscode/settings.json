@@ -1,4 +1,8 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+    "python.defaultInterpreterPath": "d:\\1\\bs\\new_CUSHION\\.venv\\python.exe",
+    "python.interpreterPath": "d:\\1\\bs\\new_CUSHION\\.venv\\python.exe",
+    "terminal.integrated.env.windows": {
+        "PATH": "d:\\1\\bs\\new_CUSHION\\.venv\\Library\\bin;${env:PATH}"
+    },
+    "python.terminal.activateEnvironment": true
 }
