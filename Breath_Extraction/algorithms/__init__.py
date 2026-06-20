@@ -6,6 +6,8 @@ from .afd_extract import extract_respiration as extract_afd
 from .vmd_MAPE import extract_respiration as extract_vmd_fpr
 # === 新增 SMVMD 算法接口挂载 ===
 from .smvmd_extract import extract_respiration as extract_smvmd
+# === 新增 GOA-VMD 算法接口挂载 ===
+from .goa_vmd_extract import extract_respiration as extract_goa_vmd
 
 from .base import (
     smooth_respiration_signal,
@@ -19,8 +21,9 @@ __all__ = [
     "extract_afd",
     "extract_vmd_fpr",
     "extract_smvmd",  # 显式暴露
+    "extract_goa_vmd",  # GOA-VMD 自适应优化
     "smooth_respiration_signal",
     "calculate_bpm",
-    "calculate_bpm_fpr"
-    "reconstruct_top3_components_by_energy"
+    "calculate_bpm_fpr",
+    "reconstruct_top3_components_by_energy",
 ]
