@@ -1,0 +1,22 @@
+[project]
+name = "cushion"
+version = "2.0.0"
+description = "柔性压力阵列坐垫生理信号监测系统 — 呼吸率与心率 (BCG) 提取"
+requires-python = ">=3.8"
+readme = "readme.md"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cushion*"]
+
+[project.scripts]
+breath-analyzer = "apps.breath_analyzer:main"
+heartbeat-analyzer = "apps.heartbeat_analyzer:main"
+analyze-breath = "scripts.analyze_breath:main"
+analyze-heartbeat = "scripts.analyze_heartbeat:main"
+
+[tool.setuptools]
+package-dir = { "" = "." }
