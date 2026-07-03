@@ -1,8 +1,11 @@
 {
-    "python.defaultInterpreterPath": "d:\\1\\bs\\new_CUSHION\\.venv\\python.exe",
-    "python.interpreterPath": "d:\\1\\bs\\new_CUSHION\\.venv\\python.exe",
+    "python.defaultInterpreterPath": "D:\\anaconda\\envs\\torch\\python.exe",
+    "python.interpreterPath": "D:\\anaconda\\envs\\torch\\python.exe",
     "terminal.integrated.env.windows": {
-        "PATH": "d:\\1\\bs\\new_CUSHION\\.venv\\Library\\bin;${env:PATH}"
+        "PATH": "D:\\anaconda\\envs\\torch\\Library\\bin;D:\\anaconda\\envs\\torch\\Scripts;D:\\anaconda\\envs\\torch;${env:PATH}"
     },
-    "python.terminal.activateEnvironment": true
+    "python.terminal.activateEnvironment": true,
+    "python.analysis.extraPaths": [
+        "D:\\1\\bs\\new_CUSHION\\40_40_Extraction_1"
+    ]
 }

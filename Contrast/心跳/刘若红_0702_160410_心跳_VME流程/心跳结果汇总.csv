@@ -1,0 +1,6 @@
+﻿算法,投票BPM,ACR,FPR,FFT,参考BPM,绝对误差,相对误差(%),耗时(ms),预处理
+均值法,84.00,84.00,73.37,71.92,75.00,9.00,12.0,2,get_dual_roi_mean_heartbeat(VME)
+ACMD,74.67,74.67,71.97,71.92,75.00,0.33,0.4,2,get_dual_roi_mean_heartbeat(VME)
+VMD,96.00,96.00,92.85,100.39,75.00,21.00,28.0,55,get_dual_roi_mean_heartbeat(VME)
+EMD,96.00,96.00,90.71,90.65,75.00,21.00,28.0,44,get_dual_roi_mean_heartbeat(VME)
+VME,56.00,56.00,57.71,57.69,75.00,19.00,25.3,60,frames→VME内部
