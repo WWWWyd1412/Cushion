@@ -22,6 +22,7 @@ BPM估计: ACR (自相关基础周期法) 为主，FPR为辅
 """
 
 import sys, os, csv, time, warnings
+from typing import Any, cast
 warnings.filterwarnings('ignore')
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +40,8 @@ from scipy.ndimage import median_filter, gaussian_filter
 from scipy.signal import butter, filtfilt, find_peaks, correlate
 
 from algorithms.base import (
-    butter_bandpass_filter, wavelet_denoise,
+    butter_bandpass_filter as _butter_bandpass_filter,
+    wavelet_denoise as _wavelet_denoise,
     get_dual_roi_mean_heartbeat,
 )
 from algorithms.heartbeat_extract import (
@@ -47,6 +49,17 @@ from algorithms.heartbeat_extract import (
     extract_heartbeat_vmd,  extract_heartbeat_emd,
     extract_heartbeat_vme,
 )
+
+
+def butter_bandpass_filter(data: Any, lowcut: float = 0.1, highcut: float = 0.5,
+                           fs: float = 10.0, order: int = 3) -> np.ndarray:
+    """类型收窄包装：避免 Pylance 将外部函数推断为 None/tuple。"""
+    return np.asarray(_butter_bandpass_filter(data, lowcut, highcut, fs, order), dtype=np.float64)
+
+
+def wavelet_denoise(data: Any, alpha: float = 0.5) -> np.ndarray:
+    """类型收窄包装：外部算法实际返回数组。"""
+    return np.asarray(_wavelet_denoise(data, alpha), dtype=np.float64)
 
 # ── 配置 ─────────────────────────────────────────────────────────
 FS       = 11.2
@@ -195,7 +208,7 @@ def load_ref_ch2(fp):
     ch2 = np.array(ch2r, dtype=np.float64)
     if len(ch2) > 2*trim: ch2 = ch2[trim:-trim]
     ch2 -= ch2.mean()
-    b2, a2 = butter(4, 5.0/(0.5*fs_r), btype='low')
+    b2, a2 = cast(tuple[np.ndarray, np.ndarray], butter(4, 5.0/(0.5*fs_r), btype='low', output='ba'))
     ds     = max(1, int(fs_r/50))
     ch2_ds = filtfilt(b2, a2, ch2)[::ds]
     fs_ppg = fs_r / ds
@@ -242,7 +255,7 @@ def _ica_fuse_hb(roi_mat, fs):
         src = PCA(n_components=nc, random_state=42).fit_transform(X)
     freqs = _ff(N, 1.0/fs)[:N//2]
     inb   = (freqs >= HB_LOW) & (freqs <= HB_HIGH)
-    best, bsnr = None, -999.0
+    best, bsnr = src[:, 0], -999.0
     for k in range(src.shape[1]):
         c   = src[:, k]
         psd = np.abs(_fft(c))[:N//2]**2
@@ -303,7 +316,7 @@ def get_standard_hb_signal(frames):
         f_heart = float(freqs_est[vm][np.argmax(psd_est[vm])]) if vm.any() else 1.2
         alpha_bd = (1000.0 * np.exp(1.09 * ((f_heart - 1.25) / -0.5)**2)
                     if f_heart <= 1.25 else 1000.0)
-        u_bd  = VME_Core(fused - fused.mean(), fs=FS, f_init=0.25, alpha=alpha_bd)
+        u_bd  = np.asarray(VME_Core(fused - fused.mean(), fs=FS, f_init=0.25, alpha=int(alpha_bd)), dtype=np.float64)
         fused = fused - u_bd
     except Exception:
         pass
